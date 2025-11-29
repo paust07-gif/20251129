@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Black-Scholes Option Calculator</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2rem; }
+    form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
+    label { display: flex; flex-direction: column; font-weight: bold; }
+    input, textarea { margin-top: 0.25rem; padding: 0.5rem; font-size: 1rem; }
+    button { padding: 0.75rem 1.25rem; font-size: 1rem; cursor: pointer; }
+    .result, .error { margin-top: 1.5rem; padding: 1rem; border-radius: 6px; }
+    .result { background: #e8f5e9; border: 1px solid #c8e6c9; }
+    .error { background: #ffebee; border: 1px solid #ffcdd2; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <h1>Black-Scholes Option Calculator</h1>
+  <p>Simulates terminal prices under the risk-neutral Black-Scholes model and discounts the expected payoff. Use variables <code>S0</code> (spot), <code>ST</code> (terminal price), <code>K</code> (strike), <code>r</code>, <code>sigma</code>, and <code>T</code> inside the payoff expression.</p>
+  <form method="POST" action="/calculate">
+    <label>Spot Price (S0)
+      <input type="number" step="any" name="spot" value="100" required>
+    </label>
+    <label>Strike (K)
+      <input type="number" step="any" name="strike" value="100" required>
+    </label>
+    <label>Risk-free Rate (r)
+      <input type="number" step="any" name="rate" value="0.05" required>
+    </label>
+    <label>Volatility (sigma)
+      <input type="number" step="any" name="volatility" value="0.2" required>
+    </label>
+    <label>Time to Maturity (T, in years)
+      <input type="number" step="any" name="maturity" value="1" required>
+    </label>
+    <label>Monte Carlo Paths
+      <input type="number" name="paths" value="50000" min="100" step="100">
+    </label>
+    <label style="grid-column: 1 / -1;">Payoff Expression
+      <textarea name="payoff" rows="3" required>max(ST - K, 0)</textarea>
+    </label>
+    <div style="grid-column: 1 / -1;">
+      <button type="submit">Calculate Price</button>
+    </div>
+  </form>
+
+  {% if result %}
+  <div class="result">
+    <h2>Price: {{ '%.4f'|format(result.price) }}</h2>
+    <p>Payoff: <code>{{ result.payoff }}</code></p>
+    <pre>{{ result.input | tojson(indent=2) }}</pre>
+  </div>
+  {% endif %}
+
+  {% if error %}
+  <div class="error">
+    <strong>Error:</strong>
+    <pre>{{ error }}</pre>
+  </div>
+  {% endif %}
+</body>
+</html>
