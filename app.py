@@ -343,8 +343,53 @@ def rolling_corr(df: pd.DataFrame, window: int = 30) -> pd.DataFrame:
     d=df[["date","JKM","TTF"]].dropna().sort_values("date").copy(); d["JKM_return"]=d["JKM"].pct_change(); d["TTF_return"]=d["TTF"].pct_change(); d["Rolling Correlation"]=d["JKM_return"].rolling(window).corr(d["TTF_return"]); d["Change"] = d["Rolling Correlation"].diff(); return d.dropna(subset=["Rolling Correlation"])
 
 
-def corr_line_chart(corr: pd.DataFrame, corr_label: str) -> go.Figure:
-    fig=go.Figure(); fig.add_trace(go.Scatter(x=corr["date"], y=corr["Rolling Correlation"], mode="lines+markers", name=f"{corr_label} Return Correlation", line=dict(color=POSCO_BLUE,width=2.8), marker=dict(size=4), hovertemplate="Date: %{x|%Y-%m-%d}<br>Return correlation: %{y:.2f}<extra></extra>")); fig.add_trace(go.Scatter(x=corr["date"], y=corr["Change"], mode="lines", name="Change", line=dict(color=CYAN,width=2,dash="dot"), hovertemplate="Date: %{x|%Y-%m-%d}<br>Change: %{y:+.3f}<extra></extra>")); fig.add_hline(y=0,line_width=1,line_dash="dash",line_color="#6B7C93"); return layout(fig,"JKM-TTF Rolling Return Correlation & Change","Return correlation / change")
+def corr_period_chart(df: pd.DataFrame, ad: date) -> go.Figure:
+    """1Y/6M/3M/1M 각 기간별 JKM-TTF spot price 상관계수를 꺾은선으로 표시.
+    각 점에 상관계수 값과 전 구간 대비 변화량(△)을 숫자로 표시."""
+    periods=[("1Y",365),("6M",183),("3M",92),("1M",31)]
+    end=pd.Timestamp(ad); labels=[]; corrs=[]
+    for label,days in periods:
+        w=df[df["date"]>=end-pd.Timedelta(days=days)][["JKM","TTF"]].dropna()
+        c=w["JKM"].corr(w["TTF"]) if len(w)>=3 else np.nan
+        labels.append(label); corrs.append(round(c,3) if not np.isnan(c) else None)
+    # 변화량 계산 (1Y→6M→3M→1M 순서로)
+    changes=[None]
+    for i in range(1,len(corrs)):
+        if corrs[i] is not None and corrs[i-1] is not None:
+            changes.append(corrs[i]-corrs[i-1])
+        else:
+            changes.append(None)
+    # 점 색상: 전 구간 대비 상승=POSCO_BLUE, 하락=#FF8A65
+    colors=[POSCO_BLUE if (changes[i] is None or changes[i]>=0) else "#FF8A65" for i in range(len(corrs))]
+    # annotation 텍스트: 값 + 변화량
+    texts=[]
+    for i,(c,ch) in enumerate(zip(corrs,changes)):
+        if c is None: texts.append("N/A"); continue
+        if ch is None: texts.append(f"{c:.2f}")
+        else: texts.append(f"{c:.2f}<br><span style='font-size:11px'>△{ch:+.2f}</span>")
+    fig=go.Figure()
+    fig.add_trace(go.Scatter(
+        x=labels, y=corrs,
+        mode="lines+markers+text",
+        name="JKM-TTF Spot Correlation",
+        line=dict(color=POSCO_BLUE,width=3),
+        marker=dict(size=14, color=colors, line=dict(color="white",width=2)),
+        text=[f"{c:.2f}" if c is not None else "N/A" for c in corrs],
+        textposition="top center",
+        textfont=dict(size=13, color=NAVY, family="Arial Black"),
+        hovertemplate="Period: %{x}<br>Correlation: %{y:.3f}<extra></extra>"
+    ))
+    # 변화량 annotation을 별도 trace로 (△ 표시)
+    for i in range(1,len(corrs)):
+        if changes[i] is not None and corrs[i] is not None:
+            ch=changes[i]; col="#2E7D32" if ch>=0 else "#C62828"
+            fig.add_annotation(x=labels[i], y=corrs[i], text=f"△{ch:+.2f}",
+                showarrow=False, yshift=-28, font=dict(size=11,color=col,family="Arial"))
+    fig.add_hline(y=0.7,line_width=1,line_dash="dot",line_color="#56B870",annotation_text="Strong Coupling",annotation_font_size=10)
+    fig.add_hline(y=0.4,line_width=1,line_dash="dot",line_color="#FFA726",annotation_text="Moderate Coupling",annotation_font_size=10)
+    fig.add_hline(y=0,  line_width=1,line_dash="dash",line_color="#6B7C93")
+    fig.update_layout(yaxis=dict(range=[-0.2,1.05],tickformat=".2f"))
+    return layout(fig,"JKM-TTF Spot Price Correlation by Period","Correlation")
 
 
 def corr_summary(df: pd.DataFrame, ad: date) -> pd.DataFrame:
@@ -359,8 +404,6 @@ with st.sidebar:
     analysis_date=st.date_input("Analysis Date",value=date.today(),max_value=date.today()+timedelta(days=365))
     lookback_label=st.selectbox("Lookback Period",["1 Year","6 Months","3 Months","1 Month"],index=0)
     lookback_days={"1 Year":365,"6 Months":183,"3 Months":92,"1 Month":31}[lookback_label]
-    corr_window=st.selectbox("Correlation Window",["30D","60D","90D"],index=0)
-    corr_days={"30D":30,"60D":60,"90D":90}[corr_window]
     if "refresh_key" not in st.session_state: st.session_state["refresh_key"]=0
     if st.button("Refresh Data",width="stretch"):
         st.session_state["refresh_key"]+=1; load_spot.clear(); load_forward.clear(); load_forecast.clear(); load_fred.clear(); load_fred_hh.clear(); load_yahoo.clear(); load_ttf_hh.clear()
@@ -389,7 +432,12 @@ if comparison.empty:
     comparison=pd.merge(sample_forward(analysis_date),sample_forecast(analysis_date),on="date",how="inner"); jkm_sample=True; fcast_sample=True
 comparison["spread"]=comparison["jkm_forward"]-comparison["forecast_value"]; comparison["spread_pct"]=comparison["spread"]/comparison["forecast_value"]*100
 structure_spread,market_structure,slope=structure(jkm_forward); latest_spot=float(spot_df["JKM"].iloc[-1]); latest_hh=float(spot_df["HH"].iloc[-1]); latest_jkm_forward=float(jkm_forward.sort_values("derivative_position")["jkm_forward"].iloc[0]); usgc_margin=latest_jkm_forward-(latest_hh*1.15+2.35+1.45); arb_signal="OPEN" if usgc_margin>.75 else "WATCH" if usgc_margin>.15 else "CLOSED"
-corr_data=rolling_corr(spot_df,corr_days); latest_corr=float(corr_data["Rolling Correlation"].iloc[-1]) if not corr_data.empty else float("nan"); corr_change=float(corr_data["Change"].iloc[-1]) if not corr_data.empty else float("nan")
+# 기간별 상관계수: 1M, 3M 계산 → metric 카드용
+def _period_corr(df, ad, days):
+    w=df[df["date"]>=pd.Timestamp(ad)-pd.Timedelta(days=days)][["JKM","TTF"]].dropna()
+    return w["JKM"].corr(w["TTF"]) if len(w)>=3 else float("nan")
+latest_corr_1m=_period_corr(spot_df,analysis_date,31); latest_corr_3m=_period_corr(spot_df,analysis_date,92)
+corr_change=latest_corr_1m-latest_corr_3m if not (np.isnan(latest_corr_1m) or np.isnan(latest_corr_3m)) else float("nan")
 
 with st.sidebar:
     st.divider(); st.markdown("### Data Source Status"); statuses={"S&P Global Spot":spot_status,"S&P Global Forward":jkm_status,"S&P Global Forecast":fcast_status,"FRED HH Spot":fred_hh_status,"Yahoo TTF/HH":gas_status,"FRED Oil":fred_status,"Yahoo Oil":yahoo_status}; st.markdown('<div class="status-card" style="padding:12px 14px;">',unsafe_allow_html=True)
@@ -399,13 +447,13 @@ with st.sidebar:
 
 kst=timezone(timedelta(hours=9)); st.markdown(f"""<div class="main-header"><h1 class="main-title">POSCO International Corp - LNG Market Insight</h1><p class="main-subtitle">Global LNG Market Intelligence Dashboard | Spot, Forward Curve, Forecast Gap & Arbitrage Signal</p><p class="last-updated">Last Updated: {datetime.now(kst).strftime('%Y-%m-%d %H:%M')} KST</p></div>""",unsafe_allow_html=True)
 if spot_sample or jkm_sample or fcast_sample or gas_df is None: st.warning("Sample / Estimated Data: 일부 가스 벤치마크가 연결되지 않아 샘플/추정 데이터를 사용 중입니다.")
-cols=st.columns(4); cols[0].metric("JKM Spot",f"{latest_spot:.2f} $/MMBtu",delta=f"M+1 {latest_jkm_forward:.2f}"); cols[1].metric("USGC Margin",f"{usgc_margin:.2f} $/MMBtu",delta="Netback to Asia"); cols[2].metric("Arbitrage Signal",arb_signal,delta="USGC → Asia"); cols[3].metric("JKM-TTF Return Corr",f"{latest_corr:.2f}",delta=f"{corr_change:+.3f} d/d")
+cols=st.columns(4); cols[0].metric("JKM Spot",f"{latest_spot:.2f} $/MMBtu",delta=f"M+1 {latest_jkm_forward:.2f}"); cols[1].metric("USGC Margin",f"{usgc_margin:.2f} $/MMBtu",delta="Netback to Asia"); cols[2].metric("Arbitrage Signal",arb_signal,delta="USGC → Asia"); cols[3].metric("JKM-TTF Corr (1M)",f"{latest_corr_1m:.2f}",delta=f"vs 3M {corr_change:+.2f}")
 
 tab1,tab2=st.tabs(["Market Overview & Coupling", "Forward Curve, Forecast & Netback"])
 with tab1:
     spot_window=spot_df.tail(lookback_days).copy(); left,right=st.columns(2)
     with left: render(line_chart(spot_window,["JKM","TTF","HH","GCM"],"Global LNG & Gas Benchmarks", "$/MMBtu",[POSCO_BLUE,CYAN,"#56B870","#7B61FF"])); render(spread_chart(spot_window))
-    with right: render(line_chart(spot_window,["Brent","WTI"],"Crude Oil Benchmark Price Trend","$/bbl",[NAVY,"#4AA3FF"])); render(corr_line_chart(corr_data,corr_window)); st.markdown("### JKM-TTF Coupling Summary"); st.dataframe(corr_summary(spot_df,analysis_date).style.format({"Return Correlation":"{:.2f}"}),use_container_width=True,hide_index=True)
+    with right: render(line_chart(spot_window,["Brent","WTI"],"Crude Oil Benchmark Price Trend","$/bbl",[NAVY,"#4AA3FF"])); render(corr_period_chart(spot_df,analysis_date)); st.markdown("### JKM-TTF Coupling Summary"); st.dataframe(corr_summary(spot_df,analysis_date).style.format({"Return Correlation":"{:.2f}"}),use_container_width=True,hide_index=True)
 with tab2:
     left,right=st.columns(2)
     with left: render(forward_chart(jkm_forward,"jkm_forward","JKM Forward","JKM Forward Curve",POSCO_BLUE)); render(comparison_chart(comparison)); render(spread_bar(comparison))
