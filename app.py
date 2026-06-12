@@ -241,9 +241,7 @@ def line_chart(df: pd.DataFrame, cols: list[str], title: str, unit: str, colors:
 
 
 def forward_chart(df: pd.DataFrame, val: str, name: str, title: str, color: str) -> go.Figure:
-    custom=np.stack([df["contract"],df["date"].dt.strftime("%b %Y")],axis=-1); fig=go.Figure()
-    fig.add_trace(go.Scatter(x=df["date"], y=df[val], customdata=custom, mode="lines+markers", name=name, line=dict(color=color,width=3), marker=dict(size=7,color=color), hovertemplate="Contract: %{customdata[0]}<br>Month: %{customdata[1]}<br>"+f"{name}: %{{y:.2f}} $/MMBtu<extra></extra>"))
-    return layout(fig,title,"$/MMBtu")
+    custom=np.stack([df["contract"],df["date"].dt.strftime("%b %Y")],axis=-1); fig=go.Figure(); fig.add_trace(go.Scatter(x=df["date"], y=df[val], customdata=custom, mode="lines+markers", name=name, line=dict(color=color,width=3), marker=dict(size=7,color=color), hovertemplate="Contract: %{customdata[0]}<br>Month: %{customdata[1]}<br>"+f"{name}: %{{y:.2f}} $/MMBtu<extra></extra>")); return layout(fig,title,"$/MMBtu")
 
 
 def structure(jkm: pd.DataFrame) -> tuple[float,str,float]:
@@ -278,6 +276,14 @@ def spread_bar(c: pd.DataFrame) -> go.Figure:
     d=c.copy(); colors=np.where(d["spread"]>=0,POSCO_BLUE,"#FF8A65"); fig=go.Figure(); fig.add_trace(go.Bar(x=d["date"],y=d["spread"],customdata=d["date"].dt.strftime("%b %Y"),name="Forward - Forecast Spread",marker_color=colors,hovertemplate="Month: %{customdata}<br>Forward - Forecast Spread: %{y:+.2f} $/MMBtu<extra></extra>")); fig.add_hline(y=0,line_width=1,line_dash="dash",line_color="#6B7C93"); return layout(fig,"Forward - Forecast Spread","$/MMBtu")
 
 
+def rolling_corr(df: pd.DataFrame, window: int = 30) -> pd.DataFrame:
+    d=df[["date","JKM","TTF"]].dropna().sort_values("date").copy(); d["Rolling Correlation"]=d["JKM"].rolling(window).corr(d["TTF"]); d["Change"] = d["Rolling Correlation"].diff(); return d.dropna(subset=["Rolling Correlation"])
+
+
+def corr_line_chart(corr: pd.DataFrame) -> go.Figure:
+    fig=go.Figure(); fig.add_trace(go.Scatter(x=corr["date"], y=corr["Rolling Correlation"], mode="lines+markers", name="30D Rolling Correlation", line=dict(color=POSCO_BLUE,width=2.8), marker=dict(size=4), hovertemplate="Date: %{x|%Y-%m-%d}<br>Correlation: %{y:.2f}<extra></extra>")); fig.add_trace(go.Scatter(x=corr["date"], y=corr["Change"], mode="lines", name="Daily Change", line=dict(color=CYAN,width=2,dash="dot"), hovertemplate="Date: %{x|%Y-%m-%d}<br>Change: %{y:+.3f}<extra></extra>")); fig.add_hline(y=0,line_width=1,line_dash="dash",line_color="#6B7C93"); return layout(fig,"JKM-TTF Rolling Correlation & Change","Correlation / daily change")
+
+
 def corr_summary(df: pd.DataFrame, ad: date) -> pd.DataFrame:
     rows=[]; end=pd.Timestamp(ad)
     for label,days in [("1 Year",365),("6 Months",183),("3 Months",92),("1 Month",31)]:
@@ -285,15 +291,13 @@ def corr_summary(df: pd.DataFrame, ad: date) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def corr_heatmap(corr_df: pd.DataFrame) -> go.Figure:
-    z=corr_df["Pearson Correlation"].fillna(0).to_numpy().reshape(1,-1); custom=np.array([[f"{r['Period']} | {r['Interpretation']}" for _,r in corr_df.iterrows()]]); fig=go.Figure(data=go.Heatmap(z=z,x=corr_df["Period"],y=["JKM-TTF"],customdata=custom,zmin=-1,zmax=1,colorscale=[[0,"#FFECE7"],[0.5,"#FFFFFF"],[1,"#A7E8FF"]],hovertemplate="%{customdata}<br>Correlation: %{z:.2f}<extra></extra>",colorbar=dict(title="ρ"))); return layout(fig,"JKM-TTF Correlation Heatmap",None)
-
-
 with st.sidebar:
     st.markdown("### Market Controls")
     analysis_date=st.date_input("Analysis Date",value=date.today(),max_value=date.today()+timedelta(days=365))
     lookback_label=st.selectbox("Lookback Period",["1 Year","6 Months","3 Months","1 Month"],index=0)
     lookback_days={"1 Year":365,"6 Months":183,"3 Months":92,"1 Month":31}[lookback_label]
+    corr_window=st.selectbox("Correlation Window",["30D","60D","90D"],index=0)
+    corr_days={"30D":30,"60D":60,"90D":90}[corr_window]
     if "refresh_key" not in st.session_state: st.session_state["refresh_key"]=0
     if st.button("Refresh Data",width="stretch"):
         st.session_state["refresh_key"]+=1; load_spot.clear(); load_forward.clear(); load_forecast.clear(); load_fred.clear(); load_yahoo.clear()
@@ -313,6 +317,7 @@ if comparison.empty:
     comparison=pd.merge(sample_forward(analysis_date),sample_forecast(analysis_date),on="date",how="inner"); jkm_sample=True; fcast_sample=True
 comparison["spread"]=comparison["jkm_forward"]-comparison["forecast_value"]; comparison["spread_pct"]=comparison["spread"]/comparison["forecast_value"]*100
 structure_spread,market_structure,slope=structure(jkm_forward); latest_spot=float(spot_df["JKM"].iloc[-1]); latest_hh=float(spot_df["HH"].iloc[-1]); latest_jkm_forward=float(jkm_forward.sort_values("derivative_position")["jkm_forward"].iloc[0]); usgc_margin=latest_jkm_forward-(latest_hh*1.15+2.35+1.45); arb_signal="OPEN" if usgc_margin>.75 else "WATCH" if usgc_margin>.15 else "CLOSED"
+corr_data=rolling_corr(spot_df,corr_days); latest_corr=float(corr_data["Rolling Correlation"].iloc[-1]) if not corr_data.empty else float("nan"); corr_change=float(corr_data["Change"].iloc[-1]) if not corr_data.empty else float("nan")
 
 with st.sidebar:
     st.divider(); st.markdown("### Data Source Status"); statuses={"S&P Global Spot":spot_status,"S&P Global Forward":jkm_status,"S&P Global Forecast":fcast_status,"FRED":fred_status,"Yahoo Finance":yahoo_status}; st.markdown('<div class="status-card" style="padding:12px 14px;">',unsafe_allow_html=True)
@@ -322,22 +327,19 @@ with st.sidebar:
 
 kst=timezone(timedelta(hours=9)); st.markdown(f"""<div class="main-header"><h1 class="main-title">POSCO International Corp - LNG Market Insight</h1><p class="main-subtitle">Global LNG Market Intelligence Dashboard | Spot, Forward Curve, Forecast Gap & Arbitrage Signal</p><p class="last-updated">Last Updated: {datetime.now(kst).strftime('%Y-%m-%d %H:%M')} KST</p></div>""",unsafe_allow_html=True)
 if spot_sample or jkm_sample or fcast_sample: st.warning("Sample / Estimated Data: 일부 S&P Global 데이터가 연결되지 않아 샘플/추정 데이터를 사용 중입니다.")
-cols=st.columns(4); cols[0].metric("JKM Spot",f"{latest_spot:.2f} $/MMBtu",delta=f"M+1 {latest_jkm_forward:.2f}"); cols[1].metric("USGC Margin",f"{usgc_margin:.2f} $/MMBtu",delta="Netback to Asia"); cols[2].metric("Arbitrage Signal",arb_signal,delta="USGC → Asia"); cols[3].metric("JKM Market Structure",market_structure,delta=f"Slope: {slope:+.2f} $/mo")
+cols=st.columns(4); cols[0].metric("JKM Spot",f"{latest_spot:.2f} $/MMBtu",delta=f"M+1 {latest_jkm_forward:.2f}"); cols[1].metric("USGC Margin",f"{usgc_margin:.2f} $/MMBtu",delta="Netback to Asia"); cols[2].metric("Arbitrage Signal",arb_signal,delta="USGC → Asia"); cols[3].metric("JKM-TTF Corr",f"{latest_corr:.2f}",delta=f"{corr_change:+.3f} d/d")
 
-tab1,tab2,tab3=st.tabs(["Global Spot & Coupling Analysis","Forward Curve & Netback Signal","JKM Forward vs S&P Forecast"])
+tab1,tab2=st.tabs(["Market Overview & Coupling", "Forward Curve, Forecast & Netback"])
 with tab1:
     spot_window=spot_df.tail(lookback_days).copy(); left,right=st.columns(2)
     with left: render(line_chart(spot_window,["JKM","TTF","HH","GCM"],"Global LNG & Gas Spot Price Trend","$/MMBtu",[POSCO_BLUE,CYAN,"#56B870","#7B61FF"])); render(spread_chart(spot_window))
-    with right: render(line_chart(spot_window,["Brent","WTI"],"Crude Oil Benchmark Price Trend","$/bbl",[NAVY,"#4AA3FF"])); corr_df=corr_summary(spot_df,analysis_date); render(corr_heatmap(corr_df)); st.markdown("### JKM-TTF Coupling Summary"); st.dataframe(corr_df.style.format({"Pearson Correlation":"{:.2f}"}),use_container_width=True,hide_index=True)
+    with right: render(line_chart(spot_window,["Brent","WTI"],"Crude Oil Benchmark Price Trend","$/bbl",[NAVY,"#4AA3FF"])); render(corr_line_chart(corr_data)); st.markdown("### JKM-TTF Coupling Summary"); st.dataframe(corr_summary(spot_df,analysis_date).style.format({"Pearson Correlation":"{:.2f}"}),use_container_width=True,hide_index=True)
 with tab2:
     left,right=st.columns(2)
-    with left: render(forward_chart(jkm_forward,"jkm_forward","JKM Forward","JKM Forward Curve",POSCO_BLUE)); render(forward_chart(ttf_forward,"ttf_forward","TTF Forward","TTF Forward Curve / Implied Curve",CYAN))
-    with right: render(forward_chart(hh_forward,"hh_forward","Henry Hub Forward","Henry Hub Forward Curve","#56B870")); render(curve_structure_chart(jkm_forward))
-    scols=st.columns(3); scols[0].metric("M+12 - M+1",f"{structure_spread:+.2f} $/MMBtu"); scols[1].metric("Contango / Backwardation",market_structure); scols[2].metric("Linear Regression Slope",f"{slope:+.2f} $/mo"); matrix=netback_matrix(jkm_forward,hh_forward); render(netback_heatmap(matrix)); st.dataframe(matrix.style.format({"Low Freight":"{:+.2f}","Base Freight":"{:+.2f}","High Freight":"{:+.2f}"}),use_container_width=True,hide_index=True)
-with tab3:
-    left,right=st.columns(2)
-    with left: render(comparison_chart(comparison))
-    with right: render(spread_bar(comparison))
+    with left: render(forward_chart(jkm_forward,"jkm_forward","JKM Forward","JKM Forward Curve",POSCO_BLUE)); render(comparison_chart(comparison)); render(spread_bar(comparison))
+    with right: render(forward_chart(ttf_forward,"ttf_forward","TTF Forward","TTF Forward Curve / Implied Curve",CYAN)); render(forward_chart(hh_forward,"hh_forward","Henry Hub Forward","Henry Hub Forward Curve","#56B870")); render(curve_structure_chart(jkm_forward))
+    scols=st.columns(3); scols[0].metric("M+12 - M+1",f"{structure_spread:+.2f} $/MMBtu"); scols[1].metric("Contango / Backwardation",market_structure); scols[2].metric("Linear Regression Slope",f"{slope:+.2f} $/mo")
+    matrix=netback_matrix(jkm_forward,hh_forward); render(netback_heatmap(matrix)); st.dataframe(matrix.style.format({"Low Freight":"{:+.2f}","Base Freight":"{:+.2f}","High Freight":"{:+.2f}"}),use_container_width=True,hide_index=True)
     table=comparison[["date","contract","jkm_forward","forecast_value","spread","spread_pct"]].copy(); table["Month"]=table["date"].dt.strftime("%b %Y"); table=table[["contract","Month","jkm_forward","forecast_value","spread","spread_pct"]]; table.columns=["Contract","Month","JKM Forward","S&P Forecast","Spread","Spread %"]; st.markdown("### Spread Summary Table"); st.dataframe(table.style.format({"JKM Forward":"{:.2f}","S&P Forecast":"{:.2f}","Spread":"{:+.2f}","Spread %":"{:+.2f}%"}),use_container_width=True,hide_index=True)
     avg=float(comparison["spread"].mean()); max_abs=comparison.iloc[comparison["spread"].abs().argmax()]; read="Forward curve is pricing a premium versus S&P Asia Spot Forecast, suggesting near-term risk premium." if avg>.25 else "Forward curve is discounting S&P Asia Spot Forecast, implying softer market expectations." if avg<-.25 else "Forward curve is broadly aligned with S&P Asia Spot Forecast."
     st.markdown(f"""<div class="interpretation-box"><strong>Market Interpretation</strong><br>Average Forward - Forecast spread is <strong>{avg:+.2f} $/MMBtu</strong>. {read}<br>Largest absolute gap appears in <strong>{max_abs['date'].strftime('%b %Y')}</strong> at <strong>{max_abs['spread']:+.2f} $/MMBtu</strong> ({max_abs['spread_pct']:+.2f}%).<br>Current curve structure is <strong>{market_structure}</strong> with M+12 - M+1 at <strong>{structure_spread:+.2f} $/MMBtu</strong> and regression slope of <strong>{slope:+.2f} $/mo</strong>.</div>""",unsafe_allow_html=True)
