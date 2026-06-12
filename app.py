@@ -274,17 +274,21 @@ def secret_or_env(*names: str) -> str:
     return ""
 
 
-def build_spgci_clients(username: str = "", password: str = "") -> tuple[Any | None, Any | None, str]:
+def build_spgci_clients(username: str = "", password: str = "", api_key: str = "") -> tuple[Any | None, Any | None, str]:
     try:
         spgci = import_module("spgci")
         username = username or secret_or_env("SPGCI_USERNAME", "SPGCI_USER", "SPGLOBAL_USERNAME")
         password = password or secret_or_env("SPGCI_PASSWORD", "SPGCI_PASS", "SPGLOBAL_PASSWORD")
+        api_key = api_key or secret_or_env("SPGCI_API_KEY", "SPGLOBAL_API_KEY", "SPGCI_APIKEY")
 
-        if username and password and hasattr(spgci, "set_credentials"):
-            spgci.set_credentials(username, password)
+        if not username or not password:
+            return None, None, "Partial: SPGCI username/password not provided"
+
+        if hasattr(spgci, "set_credentials"):
+            spgci.set_credentials(username, password, api_key or "")
 
         if hasattr(spgci, "ForwardCurves") and hasattr(spgci, "LNGGlobalAnalytics"):
-            return spgci.ForwardCurves(), spgci.LNGGlobalAnalytics(), "Connected"
+            return spgci.ForwardCurves(), spgci.LNGGlobalAnalytics(), "Connected: SPGCI credentials configured"
 
         client = getattr(spgci, "Client", None)
         if client is not None:
@@ -302,8 +306,8 @@ def build_spgci_clients(username: str = "", password: str = "") -> tuple[Any | N
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
-def load_jkm_forward_curve(analysis_date: date, username: str = "", password: str = "") -> tuple[pd.DataFrame, bool, str]:
-    fc, _, status = build_spgci_clients(username, password)
+def load_jkm_forward_curve(analysis_date: date, username: str = "", password: str = "", api_key: str = "", refresh_key: int = 0) -> tuple[pd.DataFrame, bool, str]:
+    fc, _, status = build_spgci_clients(username, password, api_key)
     if fc is None:
         return sample_forward_data(analysis_date), True, status
     try:
@@ -346,8 +350,8 @@ def load_jkm_forward_curve(analysis_date: date, username: str = "", password: st
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
-def load_sp_forecast_curve(analysis_date: date, username: str = "", password: str = "") -> tuple[pd.DataFrame, bool, str]:
-    _, lng, status = build_spgci_clients(username, password)
+def load_sp_forecast_curve(analysis_date: date, username: str = "", password: str = "", api_key: str = "", refresh_key: int = 0) -> tuple[pd.DataFrame, bool, str]:
+    _, lng, status = build_spgci_clients(username, password, api_key)
     if lng is None:
         return sample_forecast_data(analysis_date), True, status
     try:
@@ -735,9 +739,17 @@ with st.sidebar:
     st.markdown("### S&P Global Login")
     default_user = secret_or_env("SPGCI_USERNAME", "SPGCI_USER", "SPGLOBAL_USERNAME")
     default_password = secret_or_env("SPGCI_PASSWORD", "SPGCI_PASS", "SPGLOBAL_PASSWORD")
+    default_api_key = secret_or_env("SPGCI_API_KEY", "SPGLOBAL_API_KEY", "SPGCI_APIKEY")
     spgci_username = st.text_input("SPGCI Username", value=default_user, placeholder="S&P Global username")
     spgci_password = st.text_input("SPGCI Password", value=default_password, type="password", placeholder="S&P Global password")
+    spgci_api_key = st.text_input("SPGCI API Key", value=default_api_key, type="password", placeholder="Optional, if your SPGCI account requires it")
+    if "spgci_refresh_key" not in st.session_state:
+        st.session_state["spgci_refresh_key"] = 0
     load_live_data = st.button("Load / Refresh Live Data", type="primary", width="stretch")
+    if load_live_data:
+        st.session_state["spgci_refresh_key"] += 1
+        load_jkm_forward_curve.clear()
+        load_sp_forecast_curve.clear()
     use_live_data = bool(spgci_username and spgci_password)
     if not use_live_data:
         st.caption("S&P 계정을 입력하면 Forward/Forecast 실데이터 연결을 시도합니다.")
@@ -745,8 +757,9 @@ with st.sidebar:
         st.caption("입력한 S&P 계정으로 실데이터를 새로고침합니다.")
 
 
-jkm_forward, jkm_is_sample, jkm_status = load_jkm_forward_curve(analysis_date, spgci_username, spgci_password)
-fcast_curve, fcast_is_sample, fcast_status = load_sp_forecast_curve(analysis_date, spgci_username, spgci_password)
+refresh_key = st.session_state.get("spgci_refresh_key", 0)
+jkm_forward, jkm_is_sample, jkm_status = load_jkm_forward_curve(analysis_date, spgci_username, spgci_password, spgci_api_key, refresh_key)
+fcast_curve, fcast_is_sample, fcast_status = load_sp_forecast_curve(analysis_date, spgci_username, spgci_password, spgci_api_key, refresh_key)
 spot_df = sample_spot_data(analysis_date, max(lookback_days, 365))
 ttf_forward = sample_ttf_forward_data(analysis_date)
 hh_forward = sample_hh_forward_data(analysis_date)
@@ -801,6 +814,10 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
     st.markdown("</div>", unsafe_allow_html=True)
+    with st.expander("Connection diagnostics", expanded=False):
+        st.caption("S&P가 Partial이면 아래 메시지가 실제 API 실패 사유입니다. 인증/권한/API Key/사내망 접속 가능 여부를 확인하세요.")
+        for source, status in statuses.items():
+            st.write(f"**{source}**: {status}")
     if jkm_is_sample or fcast_is_sample or yahoo_df is None:
         st.markdown('<div class="sample-badge">Sample / Estimated Data</div>', unsafe_allow_html=True)
 
