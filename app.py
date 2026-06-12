@@ -274,18 +274,16 @@ def secret_or_env(*names: str) -> str:
     return ""
 
 
-def build_spgci_clients(username: str = "", password: str = "", api_key: str = "") -> tuple[Any | None, Any | None, str]:
+def build_spgci_clients(username: str = "", password: str = "") -> tuple[Any | None, Any | None, str]:
     try:
         spgci = import_module("spgci")
         username = username or secret_or_env("SPGCI_USERNAME", "SPGCI_USER", "SPGLOBAL_USERNAME")
         password = password or secret_or_env("SPGCI_PASSWORD", "SPGCI_PASS", "SPGLOBAL_PASSWORD")
-        api_key = api_key or secret_or_env("SPGCI_API_KEY", "SPGLOBAL_API_KEY", "SPGCI_APIKEY")
-
         if not username or not password:
             return None, None, "Partial: SPGCI username/password not provided"
 
         if hasattr(spgci, "set_credentials"):
-            spgci.set_credentials(username, password, api_key or "")
+            spgci.set_credentials(username, password)
 
         if hasattr(spgci, "ForwardCurves") and hasattr(spgci, "LNGGlobalAnalytics"):
             return spgci.ForwardCurves(), spgci.LNGGlobalAnalytics(), "Connected: SPGCI credentials configured"
@@ -306,8 +304,8 @@ def build_spgci_clients(username: str = "", password: str = "", api_key: str = "
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
-def load_jkm_forward_curve(analysis_date: date, username: str = "", password: str = "", api_key: str = "", refresh_key: int = 0) -> tuple[pd.DataFrame, bool, str]:
-    fc, _, status = build_spgci_clients(username, password, api_key)
+def load_jkm_forward_curve(analysis_date: date, username: str = "", password: str = "", refresh_key: int = 0) -> tuple[pd.DataFrame, bool, str]:
+    fc, _, status = build_spgci_clients(username, password)
     if fc is None:
         return sample_forward_data(analysis_date), True, status
     try:
@@ -350,8 +348,8 @@ def load_jkm_forward_curve(analysis_date: date, username: str = "", password: st
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
-def load_sp_forecast_curve(analysis_date: date, username: str = "", password: str = "", api_key: str = "", refresh_key: int = 0) -> tuple[pd.DataFrame, bool, str]:
-    _, lng, status = build_spgci_clients(username, password, api_key)
+def load_sp_forecast_curve(analysis_date: date, username: str = "", password: str = "", refresh_key: int = 0) -> tuple[pd.DataFrame, bool, str]:
+    _, lng, status = build_spgci_clients(username, password)
     if lng is None:
         return sample_forecast_data(analysis_date), True, status
     try:
@@ -410,17 +408,43 @@ def fetch_yahoo_series(tickers: dict[str, str], analysis_date: date, lookback_da
         return None, f"Disconnected: {exc}"
 
 
-def fetch_fred_probe() -> str:
+def fetch_fred_oil_series(analysis_date: date, lookback_days: int) -> tuple[pd.DataFrame | None, str]:
+    start = pd.Timestamp(analysis_date) - pd.Timedelta(days=lookback_days + 21)
+    end = pd.Timestamp(analysis_date)
+
+    api_key = secret_or_env("FRED_API_KEY")
+    if api_key:
+        try:
+            fredapi = import_module("fredapi")
+            fred = fredapi.Fred(api_key=api_key)
+            brent = fred.get_series("DCOILBRENTEU", observation_start=start.date(), observation_end=end.date())
+            wti = fred.get_series("DCOILWTICO", observation_start=start.date(), observation_end=end.date())
+            df = pd.DataFrame({"date": brent.index, "Brent": brent.values}).merge(
+                pd.DataFrame({"date": wti.index, "WTI": wti.values}), on="date", how="outer"
+            )
+            df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+            df[["Brent", "WTI"]] = df[["Brent", "WTI"]].apply(pd.to_numeric, errors="coerce")
+            df = df.dropna(how="all", subset=["Brent", "WTI"]).sort_values("date").tail(lookback_days)
+            if not df.empty:
+                return df, "Connected: FRED API oil series loaded"
+        except Exception as exc:
+            api_error = str(exc)
+    else:
+        api_error = "FRED_API_KEY not configured; tried public FRED CSV instead"
+
     try:
-        fredapi = import_module("fredapi")
-        api_key = secret_or_env("FRED_API_KEY")
-        if not api_key:
-            return "Partial: FRED_API_KEY not configured"
-        fred = fredapi.Fred(api_key=api_key)
-        _ = fred.get_series("DCOILBRENTEU", observation_start="2024-01-01").tail(1)
-        return "Connected"
+        fred_url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DCOILBRENTEU,DCOILWTICO"
+        raw = pd.read_csv(fred_url)
+        raw = raw.rename(columns={"observation_date": "date", "DCOILBRENTEU": "Brent", "DCOILWTICO": "WTI"})
+        raw["date"] = pd.to_datetime(raw["date"])
+        raw[["Brent", "WTI"]] = raw[["Brent", "WTI"]].replace(".", np.nan).apply(pd.to_numeric, errors="coerce")
+        df = raw[(raw["date"] >= start) & (raw["date"] <= end)].dropna(how="all", subset=["Brent", "WTI"])
+        df = df.sort_values("date").tail(lookback_days)
+        if df.empty:
+            return None, f"Partial: FRED public CSV returned no oil observations ({api_error})"
+        return df, "Connected: FRED public CSV oil series loaded"
     except Exception as exc:
-        return f"Disconnected: {exc}"
+        return None, f"Disconnected: FRED API/CSV failed ({api_error}; {exc})"
 
 
 def display_status(status: str) -> str:
@@ -739,10 +763,8 @@ with st.sidebar:
     st.markdown("### S&P Global Login")
     default_user = secret_or_env("SPGCI_USERNAME", "SPGCI_USER", "SPGLOBAL_USERNAME")
     default_password = secret_or_env("SPGCI_PASSWORD", "SPGCI_PASS", "SPGLOBAL_PASSWORD")
-    default_api_key = secret_or_env("SPGCI_API_KEY", "SPGLOBAL_API_KEY", "SPGCI_APIKEY")
     spgci_username = st.text_input("SPGCI Username", value=default_user, placeholder="S&P Global username")
     spgci_password = st.text_input("SPGCI Password", value=default_password, type="password", placeholder="S&P Global password")
-    spgci_api_key = st.text_input("SPGCI API Key", value=default_api_key, type="password", placeholder="Optional, if your SPGCI account requires it")
     if "spgci_refresh_key" not in st.session_state:
         st.session_state["spgci_refresh_key"] = 0
     load_live_data = st.button("Load / Refresh Live Data", type="primary", width="stretch")
@@ -758,18 +780,19 @@ with st.sidebar:
 
 
 refresh_key = st.session_state.get("spgci_refresh_key", 0)
-jkm_forward, jkm_is_sample, jkm_status = load_jkm_forward_curve(analysis_date, spgci_username, spgci_password, spgci_api_key, refresh_key)
-fcast_curve, fcast_is_sample, fcast_status = load_sp_forecast_curve(analysis_date, spgci_username, spgci_password, spgci_api_key, refresh_key)
+jkm_forward, jkm_is_sample, jkm_status = load_jkm_forward_curve(analysis_date, spgci_username, spgci_password, refresh_key)
+fcast_curve, fcast_is_sample, fcast_status = load_sp_forecast_curve(analysis_date, spgci_username, spgci_password, refresh_key)
 spot_df = sample_spot_data(analysis_date, max(lookback_days, 365))
 ttf_forward = sample_ttf_forward_data(analysis_date)
 hh_forward = sample_hh_forward_data(analysis_date)
+fred_df, fred_status = fetch_fred_oil_series(analysis_date, lookback_days)
 yahoo_df, yahoo_status = fetch_yahoo_series({"Brent": "BZ=F", "WTI": "CL=F"}, analysis_date, lookback_days)
-if yahoo_df is not None and {"Brent", "WTI"}.issubset(yahoo_df.columns):
-    oil_overlay = yahoo_df[["date", "Brent", "WTI"]].dropna()
+oil_source_df = fred_df if fred_df is not None else yahoo_df
+if oil_source_df is not None and {"Brent", "WTI"}.issubset(oil_source_df.columns):
+    oil_overlay = oil_source_df[["date", "Brent", "WTI"]].dropna(how="all", subset=["Brent", "WTI"])
     if not oil_overlay.empty:
         spot_df = spot_df.drop(columns=["Brent", "WTI"]).merge(oil_overlay, on="date", how="left")
         spot_df[["Brent", "WTI"]] = spot_df[["Brent", "WTI"]].ffill().bfill()
-fred_status = fetch_fred_probe()
 
 comparison = pd.merge(
     jkm_forward,
@@ -815,10 +838,10 @@ with st.sidebar:
         )
     st.markdown("</div>", unsafe_allow_html=True)
     with st.expander("Connection diagnostics", expanded=False):
-        st.caption("S&P가 Partial이면 아래 메시지가 실제 API 실패 사유입니다. 인증/권한/API Key/사내망 접속 가능 여부를 확인하세요.")
+        st.caption("S&P/FRED/Yahoo가 Partial 또는 Disconnected이면 아래 메시지가 실제 실패 사유입니다. 인증/권한/사내망 접속 가능 여부를 확인하세요.")
         for source, status in statuses.items():
             st.write(f"**{source}**: {status}")
-    if jkm_is_sample or fcast_is_sample or yahoo_df is None:
+    if jkm_is_sample or fcast_is_sample or (fred_df is None and yahoo_df is None):
         st.markdown('<div class="sample-badge">Sample / Estimated Data</div>', unsafe_allow_html=True)
 
 kst = timezone(timedelta(hours=9))
