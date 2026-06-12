@@ -28,6 +28,14 @@ div[data-testid="stMetric"] {{padding:18px;min-height:118px;}}
 .status-line:last-child {{border-bottom:none;}}
 .sample-badge {{display:inline-flex;background:#FFF7E6;color:#8A5A00;border:1px solid #FFD58A;border-radius:999px;padding:7px 12px;font-weight:800;font-size:.86rem;margin-top:8px;}}
 .interpretation-box {{background:linear-gradient(135deg,#FFFFFF 0%,#F3FAFF 100%);border:1px solid {BORDER};border-radius:18px;padding:18px 20px;box-shadow:0 12px 28px rgba(0,91,172,.08);color:#173D68;line-height:1.55;}}
+section[data-testid="stSidebar"] h3 {{font-size:1.25rem !important;font-weight:800 !important;color:{NAVY};}}
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] .stDateInput label,
+section[data-testid="stSidebar"] .stSelectbox label {{font-size:1.05rem !important;font-weight:700 !important;color:{NAVY};}}
+section[data-testid="stSidebar"] input,
+section[data-testid="stSidebar"] .stDateInput input {{font-size:1.05rem !important;}}
+section[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] span {{font-size:1.05rem !important;}}
+section[data-testid="stSidebar"] .stButton button {{font-size:1.05rem !important;font-weight:700 !important;}}
 </style>
 """, unsafe_allow_html=True)
 
