@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from importlib import import_module
+import os
 from typing import Any
 
 import numpy as np
@@ -261,23 +262,48 @@ def find_numeric_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
-def build_spgci_clients() -> tuple[Any | None, Any | None, str]:
+def secret_or_env(*names: str) -> str:
+    for name in names:
+        try:
+            value = st.secrets.get(name, "")
+        except Exception:
+            value = ""
+        value = value or os.environ.get(name, "")
+        if value:
+            return str(value)
+    return ""
+
+
+def build_spgci_clients(username: str = "", password: str = "") -> tuple[Any | None, Any | None, str]:
     try:
         spgci = import_module("spgci")
+        username = username or secret_or_env("SPGCI_USERNAME", "SPGCI_USER", "SPGLOBAL_USERNAME")
+        password = password or secret_or_env("SPGCI_PASSWORD", "SPGCI_PASS", "SPGLOBAL_PASSWORD")
+
+        if username and password and hasattr(spgci, "set_credentials"):
+            spgci.set_credentials(username, password)
+
+        if hasattr(spgci, "ForwardCurves") and hasattr(spgci, "LNGGlobalAnalytics"):
+            return spgci.ForwardCurves(), spgci.LNGGlobalAnalytics(), "Connected"
+
         client = getattr(spgci, "Client", None)
         if client is not None:
             api_client = client()
             fc = getattr(api_client, "forward_curves", None) or getattr(api_client, "forward_curve", None) or api_client
             lng = getattr(api_client, "lng", None) or getattr(api_client, "lng_analytics", None) or api_client
             return fc, lng, "Connected"
-        return spgci, spgci, "Partial"
+
+        if hasattr(spgci, "get_assessments") or hasattr(spgci, "get_price_monthly_forecast"):
+            return spgci, spgci, "Partial: using module-level spgci client"
+
+        return None, None, "Partial: S&P credentials or client constructors are not configured"
     except Exception as exc:
         return None, None, f"Disconnected: {exc}"
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
-def load_jkm_forward_curve(analysis_date: date) -> tuple[pd.DataFrame, bool, str]:
-    fc, _, status = build_spgci_clients()
+def load_jkm_forward_curve(analysis_date: date, username: str = "", password: str = "") -> tuple[pd.DataFrame, bool, str]:
+    fc, _, status = build_spgci_clients(username, password)
     if fc is None:
         return sample_forward_data(analysis_date), True, status
     try:
@@ -320,8 +346,8 @@ def load_jkm_forward_curve(analysis_date: date) -> tuple[pd.DataFrame, bool, str
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
-def load_sp_forecast_curve(analysis_date: date) -> tuple[pd.DataFrame, bool, str]:
-    _, lng, status = build_spgci_clients()
+def load_sp_forecast_curve(analysis_date: date, username: str = "", password: str = "") -> tuple[pd.DataFrame, bool, str]:
+    _, lng, status = build_spgci_clients(username, password)
     if lng is None:
         return sample_forecast_data(analysis_date), True, status
     try:
@@ -383,7 +409,7 @@ def fetch_yahoo_series(tickers: dict[str, str], analysis_date: date, lookback_da
 def fetch_fred_probe() -> str:
     try:
         fredapi = import_module("fredapi")
-        api_key = st.secrets.get("FRED_API_KEY", None) if hasattr(st, "secrets") else None
+        api_key = secret_or_env("FRED_API_KEY")
         if not api_key:
             return "Partial: FRED_API_KEY not configured"
         fred = fredapi.Fred(api_key=api_key)
@@ -706,9 +732,21 @@ with st.sidebar:
     lookback_label = st.selectbox("Lookback Period", ["1 Year", "6 Months", "3 Months", "1 Month"], index=0)
     lookback_days = {"1 Year": 365, "6 Months": 183, "3 Months": 92, "1 Month": 31}[lookback_label]
 
+    st.markdown("### S&P Global Login")
+    default_user = secret_or_env("SPGCI_USERNAME", "SPGCI_USER", "SPGLOBAL_USERNAME")
+    default_password = secret_or_env("SPGCI_PASSWORD", "SPGCI_PASS", "SPGLOBAL_PASSWORD")
+    spgci_username = st.text_input("SPGCI Username", value=default_user, placeholder="S&P Global username")
+    spgci_password = st.text_input("SPGCI Password", value=default_password, type="password", placeholder="S&P Global password")
+    load_live_data = st.button("Load / Refresh Live Data", type="primary", width="stretch")
+    use_live_data = bool(spgci_username and spgci_password)
+    if not use_live_data:
+        st.caption("S&P 계정을 입력하면 Forward/Forecast 실데이터 연결을 시도합니다.")
+    elif load_live_data:
+        st.caption("입력한 S&P 계정으로 실데이터를 새로고침합니다.")
 
-jkm_forward, jkm_is_sample, jkm_status = load_jkm_forward_curve(analysis_date)
-fcast_curve, fcast_is_sample, fcast_status = load_sp_forecast_curve(analysis_date)
+
+jkm_forward, jkm_is_sample, jkm_status = load_jkm_forward_curve(analysis_date, spgci_username, spgci_password)
+fcast_curve, fcast_is_sample, fcast_status = load_sp_forecast_curve(analysis_date, spgci_username, spgci_password)
 spot_df = sample_spot_data(analysis_date, max(lookback_days, 365))
 ttf_forward = sample_ttf_forward_data(analysis_date)
 hh_forward = sample_hh_forward_data(analysis_date)
