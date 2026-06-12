@@ -410,7 +410,13 @@ with st.sidebar:
     if "refresh_key" not in st.session_state: st.session_state["refresh_key"]=0
     if st.button("Refresh Data",width="stretch"):
         st.session_state["refresh_key"]+=1; load_spot.clear(); load_forward.clear(); load_forecast.clear(); load_fred.clear(); load_fred_hh.clear(); load_yahoo.clear(); load_ttf_hh.clear()
-    st.divider(); st.markdown("### Data Source Mode"); st.success("Live mode: S&P configured") if has_spgci() else st.warning("Demo mode: S&P not configured"); st.caption("Inputs are hidden and loaded from Streamlit settings.")
+    st.divider()
+    st.markdown("### Data Source Mode")
+    if has_spgci():
+        st.success("Live mode: S&P configured")
+    else:
+        st.warning("Demo mode: S&P not configured")
+    st.caption("Inputs are hidden and loaded from Streamlit settings.")
 
 refresh=st.session_state.get("refresh_key",0)
 jkm_forward,jkm_sample,jkm_status=load_forward(analysis_date,refresh); fcast_curve,fcast_sample,fcast_status=load_forecast(analysis_date,refresh); spot_df=sample_spot(analysis_date,max(lookback_days,365)); spgci_spot_df,spot_sample,spot_status=load_spot(analysis_date,lookback_days,refresh)
