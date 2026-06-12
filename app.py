@@ -395,7 +395,10 @@ def corr_period_chart(df: pd.DataFrame, ad: date) -> go.Figure:
 def corr_summary(df: pd.DataFrame, ad: date) -> pd.DataFrame:
     rows=[]; end=pd.Timestamp(ad)
     for label,days in [("1 Year",365),("6 Months",183),("3 Months",92),("1 Month",31)]:
-        w=df[df["date"]>=end-pd.Timedelta(days=days)][["JKM","TTF"]].dropna().pct_change().dropna(); corr=w["JKM"].corr(w["TTF"]) if len(w)>=3 else np.nan; interp="Insufficient Data" if pd.isna(corr) else "Strong Coupling" if corr>=.70 else "Moderate Coupling" if corr>=.40 else "Decoupling" if corr>=.10 else "Dislocated"; rows.append({"Period":label,"Return Correlation":corr,"Interpretation":interp})
+        w=df[df["date"]>=end-pd.Timedelta(days=days)][["JKM","TTF"]].dropna()
+        corr=w["JKM"].corr(w["TTF"]) if len(w)>=3 else np.nan
+        interp="Insufficient Data" if pd.isna(corr) else "Strong Coupling" if corr>=.70 else "Moderate Coupling" if corr>=.40 else "Decoupling" if corr>=.10 else "Dislocated"
+        rows.append({"Period":label,"Spot Correlation":corr,"Interpretation":interp})
     return pd.DataFrame(rows)
 
 
@@ -453,7 +456,7 @@ tab1,tab2=st.tabs(["Market Overview & Coupling", "Forward Curve, Forecast & Netb
 with tab1:
     spot_window=spot_df.tail(lookback_days).copy(); left,right=st.columns(2)
     with left: render(line_chart(spot_window,["JKM","TTF","HH","GCM"],"Global LNG & Gas Benchmarks", "$/MMBtu",[POSCO_BLUE,CYAN,"#56B870","#7B61FF"])); render(spread_chart(spot_window))
-    with right: render(line_chart(spot_window,["Brent","WTI"],"Crude Oil Benchmark Price Trend","$/bbl",[NAVY,"#4AA3FF"])); render(corr_period_chart(spot_df,analysis_date)); st.markdown("### JKM-TTF Coupling Summary"); st.dataframe(corr_summary(spot_df,analysis_date).style.format({"Return Correlation":"{:.2f}"}),use_container_width=True,hide_index=True)
+    with right: render(line_chart(spot_window,["Brent","WTI"],"Crude Oil Benchmark Price Trend","$/bbl",[NAVY,"#4AA3FF"])); render(corr_period_chart(spot_df,analysis_date)); st.markdown("### JKM-TTF Coupling Summary"); st.dataframe(corr_summary(spot_df,analysis_date).style.format({"Spot Correlation":"{:.2f}"}),use_container_width=True,hide_index=True)
 with tab2:
     left,right=st.columns(2)
     with left: render(forward_chart(jkm_forward,"jkm_forward","JKM Forward","JKM Forward Curve",POSCO_BLUE)); render(comparison_chart(comparison)); render(spread_bar(comparison))
