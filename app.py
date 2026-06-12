@@ -34,6 +34,7 @@ div[data-testid="stMetric"] {{padding:18px;min-height:118px;}}
 SPGCI_UN_NAME = "SPGCI_" + "UN"
 SPGCI_PW_NAME = "SPGCI_" + "PW"
 FRED_NAME = "FRED_" + "API_" + "KEY"
+MMBTU_PER_MWH = 3.412141633
 
 
 def get_conf(*names: str) -> str:
@@ -219,6 +220,25 @@ def load_yahoo(tickers: dict[str,str], ad: date, days: int) -> tuple[pd.DataFram
     except Exception: return None,"Fallback"
 
 
+@st.cache_data(show_spinner=False, ttl=1800)
+def load_ttf_hh(ad: date, days: int) -> tuple[pd.DataFrame|None,str]:
+    try:
+        raw, status = load_yahoo({"TTF_EUR_MWH":"TTF=F", "HH":"NG=F", "EURUSD":"EURUSD=X"}, ad, days)
+        if raw is None or raw.empty or "TTF_EUR_MWH" not in raw.columns:
+            return None, "Fallback"
+        raw = raw.sort_values("date")
+        if "EURUSD" not in raw.columns:
+            raw["EURUSD"] = 1.08
+        raw[["TTF_EUR_MWH", "HH", "EURUSD"]] = raw[["TTF_EUR_MWH", "HH", "EURUSD"]].ffill().bfill()
+        raw["TTF"] = raw["TTF_EUR_MWH"] * raw["EURUSD"] / MMBTU_PER_MWH
+        out = raw[["date", "TTF", "HH"]].dropna(how="all", subset=["TTF", "HH"])
+        if out.empty:
+            return None, "Fallback"
+        return out.tail(days), "Connected"
+    except Exception:
+        return None, "Fallback"
+
+
 def status_label(s: str) -> str:
     return "🟢 Connected" if s == "Connected" else "🟡 Fallback"
 
@@ -277,17 +297,17 @@ def spread_bar(c: pd.DataFrame) -> go.Figure:
 
 
 def rolling_corr(df: pd.DataFrame, window: int = 30) -> pd.DataFrame:
-    d=df[["date","JKM","TTF"]].dropna().sort_values("date").copy(); d["Rolling Correlation"]=d["JKM"].rolling(window).corr(d["TTF"]); d["Change"] = d["Rolling Correlation"].diff(); return d.dropna(subset=["Rolling Correlation"])
+    d=df[["date","JKM","TTF"]].dropna().sort_values("date").copy(); d["JKM_return"]=d["JKM"].pct_change(); d["TTF_return"]=d["TTF"].pct_change(); d["Rolling Correlation"]=d["JKM_return"].rolling(window).corr(d["TTF_return"]); d["Change"] = d["Rolling Correlation"].diff(); return d.dropna(subset=["Rolling Correlation"])
 
 
-def corr_line_chart(corr: pd.DataFrame) -> go.Figure:
-    fig=go.Figure(); fig.add_trace(go.Scatter(x=corr["date"], y=corr["Rolling Correlation"], mode="lines+markers", name="30D Rolling Correlation", line=dict(color=POSCO_BLUE,width=2.8), marker=dict(size=4), hovertemplate="Date: %{x|%Y-%m-%d}<br>Correlation: %{y:.2f}<extra></extra>")); fig.add_trace(go.Scatter(x=corr["date"], y=corr["Change"], mode="lines", name="Daily Change", line=dict(color=CYAN,width=2,dash="dot"), hovertemplate="Date: %{x|%Y-%m-%d}<br>Change: %{y:+.3f}<extra></extra>")); fig.add_hline(y=0,line_width=1,line_dash="dash",line_color="#6B7C93"); return layout(fig,"JKM-TTF Rolling Correlation & Change","Correlation / daily change")
+def corr_line_chart(corr: pd.DataFrame, corr_label: str) -> go.Figure:
+    fig=go.Figure(); fig.add_trace(go.Scatter(x=corr["date"], y=corr["Rolling Correlation"], mode="lines+markers", name=f"{corr_label} Return Correlation", line=dict(color=POSCO_BLUE,width=2.8), marker=dict(size=4), hovertemplate="Date: %{x|%Y-%m-%d}<br>Return correlation: %{y:.2f}<extra></extra>")); fig.add_trace(go.Scatter(x=corr["date"], y=corr["Change"], mode="lines", name="Change", line=dict(color=CYAN,width=2,dash="dot"), hovertemplate="Date: %{x|%Y-%m-%d}<br>Change: %{y:+.3f}<extra></extra>")); fig.add_hline(y=0,line_width=1,line_dash="dash",line_color="#6B7C93"); return layout(fig,"JKM-TTF Rolling Return Correlation & Change","Return correlation / change")
 
 
 def corr_summary(df: pd.DataFrame, ad: date) -> pd.DataFrame:
     rows=[]; end=pd.Timestamp(ad)
     for label,days in [("1 Year",365),("6 Months",183),("3 Months",92),("1 Month",31)]:
-        w=df[df["date"]>=end-pd.Timedelta(days=days)]; corr=w["JKM"].corr(w["TTF"]) if len(w)>=3 else np.nan; interp="Insufficient Data" if pd.isna(corr) else "Strong Coupling" if corr>=.70 else "Moderate Coupling" if corr>=.40 else "Decoupling" if corr>=.10 else "Dislocated"; rows.append({"Period":label,"Pearson Correlation":corr,"Interpretation":interp})
+        w=df[df["date"]>=end-pd.Timedelta(days=days)][["JKM","TTF"]].dropna().pct_change().dropna(); corr=w["JKM"].corr(w["TTF"]) if len(w)>=3 else np.nan; interp="Insufficient Data" if pd.isna(corr) else "Strong Coupling" if corr>=.70 else "Moderate Coupling" if corr>=.40 else "Decoupling" if corr>=.10 else "Dislocated"; rows.append({"Period":label,"Return Correlation":corr,"Interpretation":interp})
     return pd.DataFrame(rows)
 
 
@@ -300,14 +320,16 @@ with st.sidebar:
     corr_days={"30D":30,"60D":60,"90D":90}[corr_window]
     if "refresh_key" not in st.session_state: st.session_state["refresh_key"]=0
     if st.button("Refresh Data",width="stretch"):
-        st.session_state["refresh_key"]+=1; load_spot.clear(); load_forward.clear(); load_forecast.clear(); load_fred.clear(); load_yahoo.clear()
+        st.session_state["refresh_key"]+=1; load_spot.clear(); load_forward.clear(); load_forecast.clear(); load_fred.clear(); load_yahoo.clear(); load_ttf_hh.clear()
     st.divider(); st.markdown("### Data Source Mode"); st.success("Live mode: S&P configured") if has_spgci() else st.warning("Demo mode: S&P not configured"); st.caption("Inputs are hidden and loaded from Streamlit settings.")
 
 refresh=st.session_state.get("refresh_key",0)
 jkm_forward,jkm_sample,jkm_status=load_forward(analysis_date,refresh); fcast_curve,fcast_sample,fcast_status=load_forecast(analysis_date,refresh); spot_df=sample_spot(analysis_date,max(lookback_days,365)); spgci_spot_df,spot_sample,spot_status=load_spot(analysis_date,lookback_days,refresh)
 if spgci_spot_df is not None and "JKM" in spgci_spot_df.columns:
     spot_df=spot_df.drop(columns=["JKM"],errors="ignore").merge(spgci_spot_df[["date","JKM"]],on="date",how="left"); spot_df["JKM"]=spot_df["JKM"].ffill().bfill()
-ttf_forward=sample_ttf_forward(analysis_date); hh_forward=sample_hh_forward(analysis_date); fred_df,fred_status=load_fred(analysis_date,lookback_days); yahoo_df,yahoo_status=load_yahoo({"Brent":"BZ=F","WTI":"CL=F"},analysis_date,lookback_days); oil_df=fred_df if fred_df is not None else yahoo_df
+ttf_forward=sample_ttf_forward(analysis_date); hh_forward=sample_hh_forward(analysis_date); fred_df,fred_status=load_fred(analysis_date,lookback_days); yahoo_df,yahoo_status=load_yahoo({"Brent":"BZ=F","WTI":"CL=F"},analysis_date,lookback_days); gas_df,gas_status=load_ttf_hh(analysis_date,lookback_days); oil_df=fred_df if fred_df is not None else yahoo_df
+if gas_df is not None and {"TTF","HH"}.issubset(gas_df.columns):
+    spot_df=spot_df.drop(columns=["TTF","HH"],errors="ignore").merge(gas_df[["date","TTF","HH"]],on="date",how="left"); spot_df[["TTF","HH"]]=spot_df[["TTF","HH"]].ffill().bfill()
 if oil_df is not None and {"Brent","WTI"}.issubset(oil_df.columns):
     overlay=oil_df[["date","Brent","WTI"]].dropna(how="all",subset=["Brent","WTI"])
     if not overlay.empty:
@@ -320,20 +342,20 @@ structure_spread,market_structure,slope=structure(jkm_forward); latest_spot=floa
 corr_data=rolling_corr(spot_df,corr_days); latest_corr=float(corr_data["Rolling Correlation"].iloc[-1]) if not corr_data.empty else float("nan"); corr_change=float(corr_data["Change"].iloc[-1]) if not corr_data.empty else float("nan")
 
 with st.sidebar:
-    st.divider(); st.markdown("### Data Source Status"); statuses={"S&P Global Spot":spot_status,"S&P Global Forward":jkm_status,"S&P Global Forecast":fcast_status,"FRED":fred_status,"Yahoo Finance":yahoo_status}; st.markdown('<div class="status-card" style="padding:12px 14px;">',unsafe_allow_html=True)
+    st.divider(); st.markdown("### Data Source Status"); statuses={"S&P Global Spot":spot_status,"S&P Global Forward":jkm_status,"S&P Global Forecast":fcast_status,"Yahoo TTF/HH":gas_status,"FRED Oil":fred_status,"Yahoo Oil":yahoo_status}; st.markdown('<div class="status-card" style="padding:12px 14px;">',unsafe_allow_html=True)
     for source,status in statuses.items(): st.markdown(f'<div class="status-line"><span>{source}</span><strong>{status_label(status)}</strong></div>',unsafe_allow_html=True)
     st.markdown("</div>",unsafe_allow_html=True)
-    if spot_sample or jkm_sample or fcast_sample or (fred_df is None and yahoo_df is None): st.markdown('<div class="sample-badge">Sample / Estimated Data</div>',unsafe_allow_html=True)
+    if spot_sample or jkm_sample or fcast_sample or gas_df is None or (fred_df is None and yahoo_df is None): st.markdown('<div class="sample-badge">Sample / Estimated Data</div>',unsafe_allow_html=True)
 
 kst=timezone(timedelta(hours=9)); st.markdown(f"""<div class="main-header"><h1 class="main-title">POSCO International Corp - LNG Market Insight</h1><p class="main-subtitle">Global LNG Market Intelligence Dashboard | Spot, Forward Curve, Forecast Gap & Arbitrage Signal</p><p class="last-updated">Last Updated: {datetime.now(kst).strftime('%Y-%m-%d %H:%M')} KST</p></div>""",unsafe_allow_html=True)
-if spot_sample or jkm_sample or fcast_sample: st.warning("Sample / Estimated Data: 일부 S&P Global 데이터가 연결되지 않아 샘플/추정 데이터를 사용 중입니다.")
-cols=st.columns(4); cols[0].metric("JKM Spot",f"{latest_spot:.2f} $/MMBtu",delta=f"M+1 {latest_jkm_forward:.2f}"); cols[1].metric("USGC Margin",f"{usgc_margin:.2f} $/MMBtu",delta="Netback to Asia"); cols[2].metric("Arbitrage Signal",arb_signal,delta="USGC → Asia"); cols[3].metric("JKM-TTF Corr",f"{latest_corr:.2f}",delta=f"{corr_change:+.3f} d/d")
+if spot_sample or jkm_sample or fcast_sample or gas_df is None: st.warning("Sample / Estimated Data: 일부 가스 벤치마크가 연결되지 않아 샘플/추정 데이터를 사용 중입니다.")
+cols=st.columns(4); cols[0].metric("JKM Spot",f"{latest_spot:.2f} $/MMBtu",delta=f"M+1 {latest_jkm_forward:.2f}"); cols[1].metric("USGC Margin",f"{usgc_margin:.2f} $/MMBtu",delta="Netback to Asia"); cols[2].metric("Arbitrage Signal",arb_signal,delta="USGC → Asia"); cols[3].metric("JKM-TTF Return Corr",f"{latest_corr:.2f}",delta=f"{corr_change:+.3f} d/d")
 
 tab1,tab2=st.tabs(["Market Overview & Coupling", "Forward Curve, Forecast & Netback"])
 with tab1:
     spot_window=spot_df.tail(lookback_days).copy(); left,right=st.columns(2)
-    with left: render(line_chart(spot_window,["JKM","TTF","HH","GCM"],"Global LNG & Gas Spot Price Trend","$/MMBtu",[POSCO_BLUE,CYAN,"#56B870","#7B61FF"])); render(spread_chart(spot_window))
-    with right: render(line_chart(spot_window,["Brent","WTI"],"Crude Oil Benchmark Price Trend","$/bbl",[NAVY,"#4AA3FF"])); render(corr_line_chart(corr_data)); st.markdown("### JKM-TTF Coupling Summary"); st.dataframe(corr_summary(spot_df,analysis_date).style.format({"Pearson Correlation":"{:.2f}"}),use_container_width=True,hide_index=True)
+    with left: render(line_chart(spot_window,["JKM","TTF","HH","GCM"],"Global LNG & Gas Benchmarks", "$/MMBtu",[POSCO_BLUE,CYAN,"#56B870","#7B61FF"])); render(spread_chart(spot_window))
+    with right: render(line_chart(spot_window,["Brent","WTI"],"Crude Oil Benchmark Price Trend","$/bbl",[NAVY,"#4AA3FF"])); render(corr_line_chart(corr_data,corr_window)); st.markdown("### JKM-TTF Coupling Summary"); st.dataframe(corr_summary(spot_df,analysis_date).style.format({"Return Correlation":"{:.2f}"}),use_container_width=True,hide_index=True)
 with tab2:
     left,right=st.columns(2)
     with left: render(forward_chart(jkm_forward,"jkm_forward","JKM Forward","JKM Forward Curve",POSCO_BLUE)); render(comparison_chart(comparison)); render(spread_bar(comparison))
