@@ -1,6 +1,6 @@
 # POSCO International Corp — LNG Market Insight Dashboard
 
-> **Financial Data Science Final Assignment**  
+> **Machine Learning - Final Assignment**  
 > Yonsei University Graduate School of Economics  
 > Live Dashboard → [ml-lngmarketinsight.streamlit.app](https://ml-lngmarketinsight.streamlit.app/)
 
